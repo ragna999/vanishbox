@@ -4,87 +4,81 @@ import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import Link from "next/link";
+import { saveAs } from "file-saver";
+import lighthouse from "@lighthouse-web3/sdk";
 
-export default function Home() {
-  const [keyInput, setKeyInput] = useState("");
-  const [loading, setLoading] = useState(false);
+export default function ProfilePage() {
+  const [file, setFile] = useState<File | null>(null);
+  const [walletAddress, setWalletAddress] = useState<string>("0x1234...abcd"); // dummy
+  const [uploading, setUploading] = useState(false);
 
-  const handleSearch = async () => {
-    try {
-      setLoading(true);
-      const parsed = JSON.parse(keyInput);
-      const { cid, aesKey, iv, fileName } = parsed;
-
-      const res = await fetch(`https://gateway.lighthouse.storage/ipfs/${cid}`);
-      const encryptedData = await res.arrayBuffer();
-
-      const ivBuffer = new Uint8Array(iv);
-      const keyBytes = new TextEncoder().encode(aesKey);
-      const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
-
-      const decrypted = await crypto.subtle.decrypt(
-        { name: "AES-GCM", iv: ivBuffer },
-        cryptoKey,
-        encryptedData.slice(iv.length)
-      );
-
-      const blob = new Blob([decrypted]);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName || "vanishbox-file";
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      alert("Failed to retrieve or decrypt file. Pastikan key-nya valid!");
-      console.error(err);
-    }
-    setLoading(false);
-  };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  const handleUpload = async () => {
     if (!file) return;
-    const text = await file.text();
-    setKeyInput(text);
+    setUploading(true);
+
+    try {
+      // Step 1: generate random key (32 bytes)
+      const key = crypto.getRandomValues(new Uint8Array(32));
+      const aesKey = Buffer.from(key).toString("hex");
+
+      // Step 2: read file as ArrayBuffer
+      const arrayBuffer = await file.arrayBuffer();
+
+      // Step 3: encrypt with AES
+      const encoded = new TextEncoder().encode(aesKey);
+      const cryptoKey = await crypto.subtle.importKey("raw", encoded, "AES-GCM", false, ["encrypt"]);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, arrayBuffer);
+
+      const blob = new Blob([iv, new Uint8Array(encrypted)], { type: "application/octet-stream" });
+
+      // Step 4: upload encrypted blob to Lighthouse
+      const output = await lighthouse.uploadBuffer(blob, process.env.NEXT_PUBLIC_LIGHTHOUSE_API_KEY!);
+      const cid = output.data.Hash;
+
+      // Step 5: build vanishbox key file
+      const vanishKey = {
+        fileName: file.name,
+        cid,
+        aesKey,
+        iv: Array.from(iv)
+      };
+
+      const keyBlob = new Blob([JSON.stringify(vanishKey, null, 2)], { type: "application/json" });
+      saveAs(keyBlob, `vanishbox-key-${file.name}.json`);
+
+      alert("File encrypted & uploaded successfully!");
+    } catch (err) {
+      console.error(err);
+      alert("Failed to upload or encrypt file.");
+    }
+
+    setUploading(false);
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <nav className="w-full flex items-center justify-between px-6 py-4 border-b bg-white shadow-sm">
-        <h1 className="text-2xl font-bold text-black">VanishBox</h1>
-        <Link href="/profile">
-          <Button className="bg-black text-white hover:bg-gray-800">Profile</Button>
-        </Link>
-      </nav>
+    <div className="min-h-screen flex flex-col px-4 py-10 bg-gray-50">
+      <h1 className="text-2xl font-bold mb-6">Profile</h1>
 
-      <main className="flex flex-col items-center justify-center flex-grow px-4 py-10 bg-gray-50">
-        <Card className="w-full max-w-xl p-8 space-y-6 shadow-lg border rounded-2xl bg-white">
-          <h2 className="text-2xl font-semibold text-center">Retrieve Your Vanish File</h2>
+      <Card className="w-full max-w-xl p-6 space-y-4">
+        <div>
+          <p className="text-sm text-gray-500">Connected Wallet:</p>
+          <p className="font-mono text-md">{walletAddress}</p>
+        </div>
 
-          <Input
-            type="file"
-            accept="application/json"
-            onChange={handleFileUpload}
-          />
+        <Input
+          type="file"
+          onChange={(e) => setFile(e.target.files?.[0] || null)}
+        />
 
-          <textarea
-            className="w-full h-40 border rounded p-3 text-sm"
-            placeholder="Paste your vanishbox key JSON here..."
-            value={keyInput}
-            onChange={(e) => setKeyInput(e.target.value)}
-          />
-
-          <Button
-            onClick={handleSearch}
-            disabled={loading || !keyInput}
-            className="w-full bg-black text-white hover:bg-gray-800"
-          >
-            {loading ? "Decrypting..." : "Retrieve & Decrypt"}
-          </Button>
-        </Card>
-      </main>
+        <Button
+          onClick={handleUpload}
+          disabled={!file || uploading}
+          className="w-full bg-black text-white hover:bg-gray-800"
+        >
+          {uploading ? "Uploading..." : "Upload & Encrypt"}
+        </Button>
+      </Card>
     </div>
   );
 }
